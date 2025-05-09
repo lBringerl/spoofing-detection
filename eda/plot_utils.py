@@ -31,3 +31,30 @@ def plot_mid_price_with_momentum(mean_price, cumulative_momentum):
     plt.title('Normalized Mid Price with Cumulative Momentum')
     plt.legend()
     plt.show()
+
+
+def draw_order_size_histogram(orders, number_of_bins=100):
+    plt.figure(figsize=(12, 6))
+    plt.hist(orders['order_size'], bins=number_of_bins, edgecolor='black')
+    plt.title('Distribution of Order Sizes for Canceled Orders')
+    plt.xlabel('Order Size')
+    plt.ylabel('Number of Orders')
+    plt.grid(True)
+    plt.show()
+
+
+def plot_order_size_vs_time(orders):
+    plt.figure(figsize=(12, 6))
+    scatter = plt.scatter(orders['duration_sec'],
+                          range(len(orders)), 
+                          c=orders['order_size'],
+                          cmap='viridis',
+                          alpha=0.5,
+                          s=70)
+    plt.colorbar(scatter, label='Order Size')
+    plt.title('Order Distribution Over Time with Size Intensity')
+    plt.xlabel('Time') 
+    plt.ylabel('Number of Orders')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
