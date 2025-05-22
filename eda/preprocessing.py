@@ -111,6 +111,191 @@ def value_change_rolling(
     return df
 
 
+def calculate_buy_velocity(
+        price: float,
+        alpha: float,
+        delta_t_sec: int,
+        bid: float,
+) -> float:
+    return (price - (bid - alpha)) / delta_t_sec
+
+
+def calculate_sell_velocity(
+        price: float,
+        alpha: float,
+        delta_t_sec: int,
+        ask: float,
+) -> float:
+    return (price - (ask + alpha)) / delta_t_sec
+
+
+def calculate_buy_cancel_velocity(
+        price: float,
+        alpha: float,
+        delta_t_sec: int,
+        bid: float,
+) -> float:
+    return ((bid - alpha) - price) / delta_t_sec
+
+
+def calculate_sell_cancel_velocity(
+        price: float,
+        alpha: float,
+        delta_t_sec: int,
+        ask: float,
+) -> float:
+    return ((ask + alpha) - price) / delta_t_sec
+
+
+def calculate_market_momentum(
+        side: str,
+        size: float,
+        alpha: float,
+        delta_t_sec: int,
+        best_bid: float,
+        best_ask: float,
+) -> float:
+    if side == 'buy':
+        return calculate_buy_velocity(best_ask, alpha, delta_t_sec, best_bid) * size
+    elif side == 'sell':
+        return calculate_sell_velocity(best_bid, alpha, delta_t_sec, best_ask) * size
+
+
+def calculate_limit_momentum(
+        side: str,
+        price: float,
+        size: float,
+        alpha: float,
+        delta_t_sec: int,
+        best_bid: float,
+        best_ask: float,
+) -> float:
+    if side == 'buy':
+        return calculate_buy_velocity(price, alpha, delta_t_sec, best_bid) * size
+    elif side == 'sell':
+        return calculate_sell_velocity(price, alpha, delta_t_sec, best_ask) * size
+
+
+def calculate_cancel_momentum(
+        side: str,
+        price: float,
+        size: float,
+        alpha: float,
+        delta_t_sec: int,
+        best_bid: float,
+        best_ask: float,
+) -> float:
+    if side == 'buy':
+        return calculate_buy_cancel_velocity(price, alpha, delta_t_sec, best_bid) * size
+    elif side == 'sell':
+        return calculate_sell_cancel_velocity(price, alpha, delta_t_sec, best_ask) * size
+
+
+def is_active(price: float, alpha: float, best_bid: float, best_ask: float):
+    return best_bid - alpha <= price and price <= best_ask + alpha
+
+
+def is_passive(price: float, alpha: float, best_bid: float, best_ask: float):
+    return ((best_bid - 2 * alpha <= price and price < best_bid - alpha) or
+            (best_ask + alpha < price and price <= best_ask + 2 * alpha))
+
+
+def momentum_rolling(
+        df: pd.DataFrame,
+        window_size: int,
+        alpha: float,
+        active_area: bool,
+        window_column: str,
+        output_column: str,
+        sort_by: str,
+):
+    df = df.sort_values(by=sort_by)
+    left_ptr, right_ptr = 0, 0
+    timestamps = df.loc[:, window_column].to_list()
+    best_bid = df.loc[:, 'best_bid'].to_list()
+    best_ask = df.loc[:, 'best_ask'].to_list()
+    order_type = df.loc[:, 'order_type'].to_list()
+    reason = df.loc[:, 'reason'].to_list()
+    side = df.loc[:, 'side'].to_list()
+    funds = df.loc[:, 'funds'].to_list()
+    size = df.loc[:, 'size'].to_list()
+    remaining_size = df.loc[:, 'remaining_size'].to_list()
+    price = df.loc[:, 'price'].to_list()
+    mid_price = df.loc[:, 'mid_price'].to_list()
+    _type = df.loc[:, 'type'].to_list()
+
+    cumulative_momentum = []
+    window_cumulative_momentum = 0
+    window_momentum = {}
+
+    def skip_condition(price: float, alpha: float, best_bid: float, best_ask: float):
+        if active_area and not is_active(price, alpha, best_bid, best_ask):
+            return True
+        if not active_area and not is_passive(price, alpha, best_bid, best_ask):
+            return True
+        return False
+
+    while right_ptr < df.shape[0]:
+        l_timestamp = timestamps[left_ptr]
+        r_timestamp = timestamps[right_ptr]
+        if (left_ptr == right_ptr) or (r_timestamp - l_timestamp < window_size):
+            if skip_condition(
+                price[right_ptr],
+                alpha,
+                best_bid[right_ptr],
+                best_ask[right_ptr]
+            ):
+                pass
+            elif order_type[right_ptr] == 'market':
+                order_size = funds[right_ptr] / mid_price[right_ptr] if np.isnan(size[right_ptr]) else size[right_ptr]
+                momentum = calculate_market_momentum(
+                    side[right_ptr],
+                    order_size,
+                    alpha,
+                    window_size / 1_000_000_000,
+                    best_bid[right_ptr],
+                    best_ask[right_ptr],
+                )
+                window_momentum[right_ptr] = momentum
+                window_cumulative_momentum += momentum
+            elif _type[right_ptr] == 'open':
+                momentum = calculate_limit_momentum(
+                    side[right_ptr],
+                    price[right_ptr],
+                    remaining_size[right_ptr],
+                    alpha,
+                    window_size / 1_000_000_000,
+                    best_bid[right_ptr],
+                    best_ask[right_ptr],
+                )
+                window_momentum[right_ptr] = momentum
+                window_cumulative_momentum += momentum
+            elif reason[right_ptr] == 'canceled':
+                order_size = remaining_size[right_ptr]
+                order_price = price[right_ptr]
+                if ~np.isnan(order_size) and ~np.isnan(order_price):
+                    momentum = calculate_cancel_momentum(
+                        side[right_ptr],
+                        order_price,
+                        order_size,
+                        alpha,
+                        window_size / 1_000_000_000,
+                        best_bid[right_ptr],
+                        best_ask[right_ptr],
+                    )
+                window_momentum[right_ptr] = momentum
+                window_cumulative_momentum += momentum
+
+            cumulative_momentum.append(window_cumulative_momentum)
+            right_ptr += 1
+        else:
+            if left_ptr in window_momentum:
+                window_cumulative_momentum -= window_momentum.pop(left_ptr)
+            left_ptr += 1
+    df.loc[:, output_column] = cumulative_momentum
+    return df
+
+
 def model_order_book(orders_df, output_start: int | None = None):
     buy_order_book = defaultdict(int)
     sell_order_book = defaultdict(int)

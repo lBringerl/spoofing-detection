@@ -1,0 +1,4 @@
+AUC: 0.9298
+AP: 0.9235
+Precision: 0.8658
+Recall: 0.8294
